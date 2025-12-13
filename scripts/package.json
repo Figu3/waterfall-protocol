@@ -1,0 +1,21 @@
+{
+  "name": "waterfall-merkle-generator",
+  "version": "1.0.0",
+  "description": "Merkle tree generator for Waterfall Protocol distributions",
+  "main": "dist/generateMerkle.js",
+  "scripts": {
+    "build": "tsc",
+    "generate": "ts-node src/generateMerkle.ts",
+    "test": "echo \"No tests yet\""
+  },
+  "keywords": ["merkle", "waterfall", "defi", "recovery"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@openzeppelin/merkle-tree": "^1.0.8",
+    "@types/node": "^25.0.1",
+    "ethers": "^6.16.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
