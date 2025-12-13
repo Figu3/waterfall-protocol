@@ -1,0 +1,347 @@
+# Waterfall Protocol Subgraph Schema
+# ===================================
+
+# Global protocol statistics
+type Protocol @entity {
+  id: ID! # "waterfall-protocol"
+  totalVaults: BigInt!
+  totalRecoveryDistributed: BigDecimal!
+  totalClaimed: BigDecimal!
+  treasury: Bytes!
+}
+
+# Vault Factory
+type VaultFactory @entity {
+  id: ID! # Factory contract address
+  vaultCount: BigInt!
+  treasury: Bytes!
+  vaults: [Vault!]! @derivedFrom(field: "factory")
+}
+
+# Recovery Vault
+type Vault @entity {
+  id: ID! # Vault contract address
+  factory: VaultFactory!
+  name: String!
+  recoveryToken: Token!
+  vaultMode: VaultMode!
+  unclaimedOption: UnclaimedOption!
+  trancheCount: Int!
+  depositsOpen: Boolean!
+  pendingRecovery: BigDecimal!
+
+  # Timestamps
+  createdAt: BigInt!
+  createdAtBlock: BigInt!
+  createdTxHash: Bytes!
+  firstDistributionAt: BigInt
+
+  # Aggregated stats
+  totalDeposited: BigDecimal!
+  totalRecoveryReceived: BigDecimal!
+  totalDistributed: BigDecimal!
+  totalClaimed: BigDecimal!
+  roundCount: BigInt!
+
+  # Relations
+  tranches: [Tranche!]! @derivedFrom(field: "vault")
+  acceptedAssets: [AcceptedAsset!]! @derivedFrom(field: "vault")
+  offChainClaims: [OffChainClaim!]! @derivedFrom(field: "vault")
+  rounds: [DistributionRound!]! @derivedFrom(field: "vault")
+  deposits: [Deposit!]! @derivedFrom(field: "vault")
+  claims: [Claim!]! @derivedFrom(field: "vault")
+  userPositions: [UserVaultPosition!]! @derivedFrom(field: "vault")
+}
+
+enum VaultMode {
+  WRAPPED_ONLY
+  WHOLE_SUPPLY
+}
+
+enum UnclaimedOption {
+  REDISTRIBUTE_PRO_RATA
+  DONATE_TO_WATERFALL
+}
+
+# Tranche (Senior, Mezzanine, Junior, etc.)
+type Tranche @entity {
+  id: ID! # vault-trancheIndex
+  vault: Vault!
+  index: Int!
+  name: String!
+  iouToken: Token!
+
+  # Stats
+  totalDeposited: BigDecimal!
+  totalClaimed: BigDecimal!
+
+  # Underlying assets for this tranche
+  underlyingAssets: [AcceptedAsset!]! @derivedFrom(field: "tranche")
+}
+
+# Token entity (ERC20)
+type Token @entity {
+  id: ID! # Token address
+  address: Bytes!
+  symbol: String!
+  name: String!
+  decimals: Int!
+  totalSupply: BigDecimal!
+}
+
+# Accepted asset configuration
+type AcceptedAsset @entity {
+  id: ID! # vault-assetAddress
+  vault: Vault!
+  tranche: Tranche!
+  token: Token!
+  priceOracle: Bytes # null if manual
+  manualPrice: BigDecimal
+
+  # Stats
+  totalDeposited: BigDecimal!
+}
+
+# Off-chain claim (legal/settlement claims)
+type OffChainClaim @entity {
+  id: ID! # vault-claimant-trancheIndex
+  vault: Vault!
+  claimant: Bytes!
+  tranche: Tranche!
+  amount: BigDecimal!
+  legalDocHash: Bytes!
+}
+
+# Distribution round
+type DistributionRound @entity {
+  id: ID! # vault-roundId
+  vault: Vault!
+  roundId: BigInt!
+
+  # Round data
+  merkleRoot: Bytes!
+  snapshotBlock: BigInt!
+  recoveryAmount: BigDecimal!
+
+  # Timestamps
+  initiatedAt: BigInt!
+  executedAt: BigInt
+
+  # Submitter/Harvester
+  submitter: Bytes!
+  harvesterBond: BigDecimal!
+  bondReturned: Boolean!
+
+  # Status
+  status: RoundStatus!
+  vetoed: Boolean!
+  executed: Boolean!
+  challenged: Boolean!
+
+  # Veto tracking
+  vetoVotes: BigDecimal!
+  vetoVoters: [VetoVote!]! @derivedFrom(field: "round")
+
+  # Claims
+  totalClaimed: BigDecimal!
+  claims: [Claim!]! @derivedFrom(field: "round")
+
+  # Tranche redemption rates
+  trancheRedemptions: [TrancheRedemption!]! @derivedFrom(field: "round")
+}
+
+enum RoundStatus {
+  PENDING      # Initiated, waiting for timelock
+  VETOED       # Vetoed by IOU holders
+  EXECUTED     # Timelock passed, executed
+  CHALLENGED   # Challenged after execution
+}
+
+# Tranche redemption rate per round
+type TrancheRedemption @entity {
+  id: ID! # vault-roundId-trancheIndex
+  round: DistributionRound!
+  tranche: Tranche!
+  amountPaid: BigDecimal!
+  redemptionRate: BigDecimal! # 0-1 (percentage of claim fulfilled)
+}
+
+# Veto vote
+type VetoVote @entity {
+  id: ID! # vault-roundId-voter
+  round: DistributionRound!
+  voter: User!
+  weight: BigDecimal!
+  timestamp: BigInt!
+  txHash: Bytes!
+}
+
+# User entity
+type User @entity {
+  id: ID! # User address
+  address: Bytes!
+
+  # Aggregated stats across all vaults
+  totalDeposited: BigDecimal!
+  totalClaimed: BigDecimal!
+  totalRedistributionClaimed: BigDecimal!
+
+  # Relations
+  deposits: [Deposit!]! @derivedFrom(field: "user")
+  claims: [Claim!]! @derivedFrom(field: "user")
+  vetoVotes: [VetoVote!]! @derivedFrom(field: "voter")
+  vaultPositions: [UserVaultPosition!]! @derivedFrom(field: "user")
+}
+
+# User position in a specific vault
+type UserVaultPosition @entity {
+  id: ID! # user-vault
+  user: User!
+  vault: Vault!
+
+  # IOU balances per tranche
+  trancheBalances: [UserTrancheBalance!]! @derivedFrom(field: "position")
+
+  # Stats
+  totalDeposited: BigDecimal!
+  totalClaimed: BigDecimal!
+  redistributionClaimed: Boolean!
+  redistributionAmount: BigDecimal!
+}
+
+# User balance in a specific tranche
+type UserTrancheBalance @entity {
+  id: ID! # user-vault-trancheIndex
+  position: UserVaultPosition!
+  tranche: Tranche!
+  balance: BigDecimal!
+  deposited: BigDecimal!
+  claimed: BigDecimal!
+}
+
+# Deposit event
+type Deposit @entity {
+  id: ID! # txHash-logIndex
+  vault: Vault!
+  user: User!
+  asset: Token!
+  tranche: Tranche!
+
+  amount: BigDecimal!
+  iouAmount: BigDecimal!
+  assetPrice: BigDecimal!
+
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  txHash: Bytes!
+}
+
+# Claim event
+type Claim @entity {
+  id: ID! # txHash-logIndex
+  vault: Vault!
+  round: DistributionRound!
+  user: User!
+
+  amount: BigDecimal!
+  isOffChain: Boolean!
+  trancheIndex: Int # Only for off-chain claims
+
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  txHash: Bytes!
+}
+
+# Recovery deposit event
+type RecoveryDeposit @entity {
+  id: ID! # txHash-logIndex
+  vault: Vault!
+  depositor: Bytes!
+  amount: BigDecimal!
+
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  txHash: Bytes!
+}
+
+# Harvest initiated event
+type HarvestInitiation @entity {
+  id: ID! # txHash-logIndex
+  vault: Vault!
+  round: DistributionRound!
+
+  merkleRoot: Bytes!
+  snapshotBlock: BigInt!
+  recoveryAmount: BigDecimal!
+  harvesterBond: BigDecimal!
+
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  txHash: Bytes!
+}
+
+# Harvest execution event
+type HarvestExecution @entity {
+  id: ID! # txHash-logIndex
+  vault: Vault!
+  round: DistributionRound!
+
+  distributed: BigDecimal!
+  fee: BigDecimal!
+  harvester: Bytes!
+
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  txHash: Bytes!
+}
+
+# Challenge event
+type Challenge @entity {
+  id: ID! # txHash-logIndex
+  vault: Vault!
+  round: DistributionRound!
+  challenger: Bytes!
+  invalidLeaf: Bytes!
+  bondSlashed: BigDecimal!
+
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  txHash: Bytes!
+}
+
+# Redistribution claim
+type RedistributionClaim @entity {
+  id: ID! # txHash-logIndex
+  vault: Vault!
+  user: User!
+  amount: BigDecimal!
+
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  txHash: Bytes!
+}
+
+# Daily vault stats (for analytics)
+type VaultDayData @entity {
+  id: ID! # vault-dayTimestamp
+  vault: Vault!
+  date: Int! # Unix timestamp at start of day
+
+  depositsCount: BigInt!
+  depositsVolume: BigDecimal!
+  claimsCount: BigInt!
+  claimsVolume: BigDecimal!
+  recoveryReceived: BigDecimal!
+}
+
+# Global daily stats
+type ProtocolDayData @entity {
+  id: ID! # dayTimestamp
+  date: Int!
+
+  activeVaults: BigInt!
+  newVaults: BigInt!
+  totalDeposits: BigDecimal!
+  totalClaims: BigDecimal!
+  totalRecovery: BigDecimal!
+}

@@ -77,6 +77,10 @@ contract RecoveryVaultTest is Test {
         lpToken.approve(address(vault), type(uint256).max);
         vm.prank(recoverer);
         usdc.approve(address(vault), type(uint256).max);
+
+        // V2: Mint and approve USDC for test contract (for harvester bond)
+        usdc.mint(address(this), 10_000_000e6);
+        usdc.approve(address(vault), type(uint256).max);
     }
 
     // ============ Deposit Tests ============
@@ -352,8 +356,8 @@ contract RecoveryVaultTest is Test {
 
         assertTrue(executed);
 
-        // Harvester should receive 0.01% fee
-        uint256 expectedFee = (500_000e6 * 1) / 10000;
+        // Harvester should receive 0.1% fee (V2: increased from 0.01%)
+        uint256 expectedFee = (500_000e6 * 10) / 10000;
         assertEq(usdc.balanceOf(address(this)) - harvesterBalanceBefore, expectedFee);
     }
 
@@ -570,7 +574,16 @@ contract RecoveryVaultTest is Test {
         vm.prank(recoverer);
         vault.depositRecovery(500_000e6);
 
+        // V2: Setup bond for submitters
         address submitter1 = address(0x111);
+        address submitter2 = address(0x222);
+        usdc.mint(submitter1, 10_000_000e6);
+        usdc.mint(submitter2, 10_000_000e6);
+        vm.prank(submitter1);
+        usdc.approve(address(vault), type(uint256).max);
+        vm.prank(submitter2);
+        usdc.approve(address(vault), type(uint256).max);
+
         vm.prank(submitter1);
         vault.initiateHarvest(keccak256("test"), block.number);
 
@@ -594,7 +607,6 @@ contract RecoveryVaultTest is Test {
         vault.initiateHarvest(keccak256("test2"), block.number);
 
         // Different submitter should succeed
-        address submitter2 = address(0x222);
         vm.prank(submitter2);
         vault.initiateHarvest(keccak256("test2"), block.number);
 
@@ -1329,6 +1341,10 @@ contract DonateToWaterfallTest is Test {
 
         vm.prank(recoverer);
         usdc.approve(address(vault), type(uint256).max);
+
+        // V2: Harvester bond setup
+        usdc.mint(address(this), 10_000_000e6);
+        usdc.approve(address(vault), type(uint256).max);
     }
 
     function test_DonateToWaterfall() public {
@@ -1405,6 +1421,10 @@ contract WholeSupplyModeTest is Test {
         xUSD.approve(address(vault), type(uint256).max);
 
         vm.prank(recoverer);
+        usdc.approve(address(vault), type(uint256).max);
+
+        // V2: Harvester bond setup
+        usdc.mint(address(this), 10_000_000e6);
         usdc.approve(address(vault), type(uint256).max);
     }
 
@@ -1498,6 +1518,10 @@ contract OffChainClaimTest is Test {
         xUSD.approve(address(vault), type(uint256).max);
 
         vm.prank(recoverer);
+        usdc.approve(address(vault), type(uint256).max);
+
+        // V2: Harvester bond setup
+        usdc.mint(address(this), 10_000_000e6);
         usdc.approve(address(vault), type(uint256).max);
     }
 
@@ -1649,6 +1673,14 @@ contract VetoCooldownTest is Test {
 
         vm.prank(recoverer);
         usdc.approve(address(vault), type(uint256).max);
+
+        // V2: Harvester bond setup for harvesters
+        usdc.mint(harvester1, 10_000_000e6);
+        usdc.mint(harvester2, 10_000_000e6);
+        vm.prank(harvester1);
+        usdc.approve(address(vault), type(uint256).max);
+        vm.prank(harvester2);
+        usdc.approve(address(vault), type(uint256).max);
     }
 
     function test_VetoCooldown_CannotResubmitDuringCooldown() public {
@@ -1774,6 +1806,10 @@ contract EdgeCaseTest is Test {
         vm.stopPrank();
 
         vm.prank(recoverer);
+        usdc.approve(address(vault), type(uint256).max);
+
+        // V2: Harvester bond setup
+        usdc.mint(address(this), 10_000_000e6);
         usdc.approve(address(vault), type(uint256).max);
     }
 
@@ -1970,8 +2006,11 @@ contract VaultConstantsTest is Test {
     function test_Constants() public view {
         assertEq(vault.HARVEST_TIMELOCK(), 3 days);
         assertEq(vault.VETO_THRESHOLD_BPS(), 1000);
+        assertEq(vault.VETO_QUORUM_BPS(), 500); // V2: New quorum constant
         assertEq(vault.VETO_COOLDOWN(), 1 days);
-        assertEq(vault.HARVESTER_FEE_BPS(), 1);
+        assertEq(vault.HARVESTER_FEE_BPS(), 10); // V2: Increased from 1 to 10
+        assertEq(vault.HARVESTER_BOND_BPS(), 100); // V2: New bond constant
+        assertEq(vault.CHALLENGE_PERIOD(), 7 days); // V2: New challenge period
         assertEq(vault.UNCLAIMED_DEADLINE(), 365 days);
         assertEq(vault.PRECISION(), 1e18);
     }
@@ -2052,6 +2091,10 @@ contract TrancheNoUnderlyingTest is Test {
 
         vm.prank(recoverer);
         usdc.approve(address(vault), type(uint256).max);
+
+        // V2: Harvester bond setup
+        usdc.mint(address(this), 10_000_000e6);
+        usdc.approve(address(vault), type(uint256).max);
     }
 
     function test_VetoWeight_TrancheWithNoUnderlyingAssets() public {
@@ -2119,6 +2162,10 @@ contract SnapshotBlockValidationTest is Test {
         vm.prank(alice);
         xUSD.approve(address(vault), type(uint256).max);
         vm.prank(recoverer);
+        usdc.approve(address(vault), type(uint256).max);
+
+        // V2: Harvester bond setup
+        usdc.mint(address(this), 10_000_000e6);
         usdc.approve(address(vault), type(uint256).max);
     }
 
@@ -2210,6 +2257,10 @@ contract SnapshotVetoProtectionTest is Test {
         vm.prank(bob);
         xUSD.approve(address(vault), type(uint256).max);
         vm.prank(recoverer);
+        usdc.approve(address(vault), type(uint256).max);
+
+        // V2: Harvester bond setup
+        usdc.mint(address(this), 10_000_000e6);
         usdc.approve(address(vault), type(uint256).max);
     }
 
@@ -2350,6 +2401,10 @@ contract RedistributionPoolDrainTest is Test {
         vm.prank(charlie);
         xUSD.approve(address(vault), type(uint256).max);
         vm.prank(recoverer);
+        usdc.approve(address(vault), type(uint256).max);
+
+        // V2: Harvester bond setup
+        usdc.mint(address(this), 10_000_000e6);
         usdc.approve(address(vault), type(uint256).max);
     }
 

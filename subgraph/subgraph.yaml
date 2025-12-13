@@ -1,0 +1,120 @@
+specVersion: 0.0.5
+schema:
+  file: ./schema.graphql
+dataSources:
+  - kind: ethereum
+    name: VaultFactory
+    network: mainnet # Change for other networks
+    source:
+      address: "0x0000000000000000000000000000000000000000" # Replace with deployed factory address
+      abi: VaultFactory
+      startBlock: 0 # Replace with deployment block
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - VaultFactory
+        - Vault
+        - Protocol
+      abis:
+        - name: VaultFactory
+          file: ../out/VaultFactory.sol/VaultFactory.json
+        - name: RecoveryVault
+          file: ../out/RecoveryVault.sol/RecoveryVault.json
+        - name: TrancheIOU
+          file: ../out/TrancheIOU.sol/TrancheIOU.json
+        - name: ERC20
+          file: ./abis/ERC20.json
+      eventHandlers:
+        - event: VaultCreated(indexed address,string,indexed address,uint8,uint8,address)
+          handler: handleVaultCreated
+      file: ./src/vaultFactory.ts
+templates:
+  - kind: ethereum
+    name: RecoveryVault
+    network: mainnet
+    source:
+      abi: RecoveryVault
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - Vault
+        - Tranche
+        - DistributionRound
+        - Deposit
+        - Claim
+        - User
+        - UserVaultPosition
+        - VetoVote
+        - RecoveryDeposit
+        - HarvestInitiation
+        - HarvestExecution
+        - Challenge
+        - RedistributionClaim
+        - VaultDayData
+        - ProtocolDayData
+      abis:
+        - name: RecoveryVault
+          file: ../out/RecoveryVault.sol/RecoveryVault.json
+        - name: TrancheIOU
+          file: ../out/TrancheIOU.sol/TrancheIOU.json
+        - name: ERC20
+          file: ./abis/ERC20.json
+      eventHandlers:
+        - event: Deposited(indexed address,indexed address,uint256,uint256,uint8)
+          handler: handleDeposited
+        - event: RecoveryDeposited(indexed address,uint256)
+          handler: handleRecoveryDeposited
+        - event: HarvestInitiated(indexed uint256,bytes32,uint256,uint256,uint256)
+          handler: handleHarvestInitiated
+        - event: VetoCast(indexed uint256,indexed address,uint256)
+          handler: handleVetoCast
+        - event: HarvestVetoed(indexed uint256,uint256,uint256)
+          handler: handleHarvestVetoed
+        - event: HarvestExecuted(indexed uint256,uint256,uint256,address)
+          handler: handleHarvestExecuted
+        - event: Claimed(indexed uint256,indexed address,uint256)
+          handler: handleClaimed
+        - event: OffChainClaimed(indexed uint256,indexed address,uint8,uint256)
+          handler: handleOffChainClaimed
+        - event: DepositsClosedEvent()
+          handler: handleDepositsClosed
+        - event: UnclaimedDonated(uint256)
+          handler: handleUnclaimedDonated
+        - event: RedistributionEnabled(uint256)
+          handler: handleRedistributionEnabled
+        - event: RedistributionClaimed(indexed address,uint256)
+          handler: handleRedistributionClaimed
+        - event: HarvesterBondPosted(indexed uint256,indexed address,uint256)
+          handler: handleHarvesterBondPosted
+        - event: HarvesterBondReturned(indexed uint256,indexed address,uint256)
+          handler: handleHarvesterBondReturned
+        - event: HarvestChallenged(indexed uint256,indexed address,bytes32)
+          handler: handleHarvestChallenged
+        - event: BatchClaimed(indexed address,uint256[],uint256)
+          handler: handleBatchClaimed
+      file: ./src/recoveryVault.ts
+  - kind: ethereum
+    name: TrancheIOU
+    network: mainnet
+    source:
+      abi: TrancheIOU
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - Token
+        - UserTrancheBalance
+      abis:
+        - name: TrancheIOU
+          file: ../out/TrancheIOU.sol/TrancheIOU.json
+        - name: ERC20
+          file: ./abis/ERC20.json
+      eventHandlers:
+        - event: Transfer(indexed address,indexed address,uint256)
+          handler: handleIOUTransfer
+      file: ./src/trancheIOU.ts

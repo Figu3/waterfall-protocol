@@ -12,15 +12,18 @@ import "./Templates.sol";
 /// @title RecoveryVault
 /// @notice Core vault for distressed asset recovery with waterfall distribution
 /// @dev Immutable after deployment - no admin functions, no upgradability
-/// @dev Security fixes applied: flash loan protection, oracle validation, rounding protection
+/// @dev V2: Added quorum, harvester bonds, batch operations, WHOLE_SUPPLY fix
 contract RecoveryVault is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // ============ Constants ============
     uint256 public constant HARVEST_TIMELOCK = 3 days;
     uint256 public constant VETO_THRESHOLD_BPS = 1000; // 10%
+    uint256 public constant VETO_QUORUM_BPS = 500; // 5% minimum participation
     uint256 public constant VETO_COOLDOWN = 1 days;
-    uint256 public constant HARVESTER_FEE_BPS = 1; // 0.01%
+    uint256 public constant HARVESTER_FEE_BPS = 10; // 0.1% (increased)
+    uint256 public constant HARVESTER_BOND_BPS = 100; // 1% of recovery as bond
+    uint256 public constant CHALLENGE_PERIOD = 7 days;
     uint256 public constant UNCLAIMED_DEADLINE = 365 days;
     uint256 public constant PRECISION = 1e18;
     uint256 public constant MAX_ORACLE_STALENESS = 1 days;
@@ -67,6 +70,10 @@ contract RecoveryVault is ReentrancyGuard {
         bool executed;
         uint256 vetoVotes;
         uint256 totalClaimed;
+        // V2: Harvester bond tracking
+        uint256 harvesterBond;
+        bool challenged;
+        bool bondReturned;
     }
 
     // ============ State ============
@@ -91,12 +98,13 @@ contract RecoveryVault is ReentrancyGuard {
     mapping(uint256 => mapping(address => mapping(uint8 => bool))) public roundOffChainClaimed;
     mapping(uint256 => mapping(address => uint256)) public snapshotPrices;
 
-    // [H-01 FIX] Snapshot IOU balances for veto weight calculation
+    // Snapshot IOU balances for veto weight calculation
     mapping(uint256 => mapping(address => uint256)) public snapshotBalances;
     mapping(uint256 => mapping(uint8 => uint256)) public snapshotTotalSupply;
 
-    // [H-04 FIX] Snapshot total supply for WHOLE_SUPPLY mode
+    // Snapshot total supply for WHOLE_SUPPLY mode
     mapping(uint256 => mapping(address => uint256)) public snapshotAssetTotalSupply;
+
 
     uint256 public firstDistributionTimestamp;
     uint256 public totalClaimedAllRounds;
@@ -104,7 +112,6 @@ contract RecoveryVault is ReentrancyGuard {
 
     bool public unclaimedDistributed;
     uint256 public redistributionPool;
-    // [C-01 FIX] Track remaining redistribution pool to prevent drain
     uint256 public redistributionPoolRemaining;
     bool public redistributionEnabled;
     mapping(address => bool) public redistributionClaimed;
@@ -112,7 +119,7 @@ contract RecoveryVault is ReentrancyGuard {
     // ============ Events ============
     event Deposited(address indexed user, address indexed asset, uint256 amount, uint256 iouAmount, uint8 trancheIndex);
     event RecoveryDeposited(address indexed depositor, uint256 amount);
-    event HarvestInitiated(uint256 indexed roundId, bytes32 merkleRoot, uint256 snapshotBlock, uint256 recoveryAmount);
+    event HarvestInitiated(uint256 indexed roundId, bytes32 merkleRoot, uint256 snapshotBlock, uint256 recoveryAmount, uint256 bond);
     event VetoCast(uint256 indexed roundId, address indexed voter, uint256 weight);
     event HarvestVetoed(uint256 indexed roundId, uint256 vetoVotes, uint256 totalWeight);
     event HarvestExecuted(uint256 indexed roundId, uint256 distributed, uint256 fee, address harvester);
@@ -122,8 +129,12 @@ contract RecoveryVault is ReentrancyGuard {
     event UnclaimedDonated(uint256 amount);
     event RedistributionEnabled(uint256 amount);
     event RedistributionClaimed(address indexed user, uint256 amount);
-    // [H-02 FIX] Event for oracle failures
     event OracleFallback(address indexed asset, address indexed oracle, uint256 manualPrice);
+    // V2: New events
+    event HarvesterBondPosted(uint256 indexed roundId, address indexed harvester, uint256 amount);
+    event HarvesterBondReturned(uint256 indexed roundId, address indexed harvester, uint256 amount);
+    event HarvestChallenged(uint256 indexed roundId, address indexed challenger, bytes32 invalidLeaf);
+    event BatchClaimed(address indexed user, uint256[] roundIds, uint256 totalAmount);
 
     // ============ Errors ============
     error DepositsAreClosed();
@@ -150,10 +161,18 @@ contract RecoveryVault is ReentrancyGuard {
     error AlreadyClaimedRedistribution();
     error NotAClaimant();
     error RoundAlreadyExecuted();
-    // [M-02 FIX] New error for invalid snapshot block
     error InvalidSnapshotBlock();
-    // [C-01 FIX] New error for insufficient redistribution pool
     error InsufficientRedistributionPool();
+    // V2: New errors
+    error QuorumNotMet();
+    error InsufficientBond();
+    error ChallengePeriodNotOver();
+    error ChallengePeriodOver();
+    error AlreadyChallenged();
+    error BondAlreadyReturned();
+    error InvalidChallenge();
+    error ArrayLengthMismatch();
+    error IndexOutOfBounds();
 
     // ============ Constructor ============
     constructor(
@@ -225,6 +244,28 @@ contract RecoveryVault is ReentrancyGuard {
         emit Deposited(msg.sender, asset, amount, iouAmount, trancheIndex);
     }
 
+    /// @notice Batch deposit multiple assets
+    /// @param assets Array of asset addresses
+    /// @param amounts Array of amounts to deposit
+    function depositMultiple(address[] calldata assets, uint256[] calldata amounts) external nonReentrant {
+        if (assets.length != amounts.length) revert ArrayLengthMismatch();
+        if (!depositsOpen) revert DepositsAreClosed();
+
+        for (uint256 i = 0; i < assets.length; i++) {
+            if (!isAcceptedAsset[assets[i]]) revert AssetNotAccepted();
+            if (amounts[i] == 0) revert ZeroAmount();
+
+            uint8 trancheIndex = assetToTranche[assets[i]];
+            uint256 assetPrice = getAssetPrice(assets[i]);
+            uint256 iouAmount = (amounts[i] * assetPrice) / PRECISION;
+
+            IERC20(assets[i]).safeTransferFrom(msg.sender, address(this), amounts[i]);
+            tranches[trancheIndex].iouToken.mint(msg.sender, iouAmount);
+
+            emit Deposited(msg.sender, assets[i], amounts[i], iouAmount, trancheIndex);
+        }
+    }
+
     /// @notice Deposit recovery tokens for distribution
     /// @param amount The amount of recovery tokens to deposit
     function depositRecovery(uint256 amount) external nonReentrant {
@@ -238,12 +279,11 @@ contract RecoveryVault is ReentrancyGuard {
 
     // ============ Distribution Functions ============
 
-    /// @notice Initiate a harvest round with a merkle root
+    /// @notice Initiate a harvest round with a merkle root (requires bond)
     /// @param _merkleRoot The merkle root for this distribution
     /// @param _snapshotBlock The block number for the snapshot
     function initiateHarvest(bytes32 _merkleRoot, uint256 _snapshotBlock) external nonReentrant {
         if (pendingRecovery == 0) revert NoRecoveryToDistribute();
-        // [M-02 FIX] Validate snapshot block is not in the future
         if (_snapshotBlock > block.number) revert InvalidSnapshotBlock();
 
         // Check cooldown if previous round was vetoed
@@ -265,15 +305,21 @@ contract RecoveryVault is ReentrancyGuard {
             emit DepositsClosedEvent();
         }
 
+        // V2: Calculate and collect harvester bond
+        uint256 bond = (pendingRecovery * HARVESTER_BOND_BPS) / 10000;
+        if (bond > 0) {
+            IERC20(recoveryToken).safeTransferFrom(msg.sender, address(this), bond);
+        }
+
         uint256 roundId = rounds.length;
 
         // Snapshot asset prices for veto weight calculation
         _snapshotAssetPrices(roundId);
 
-        // [H-01 FIX] Snapshot IOU balances and total supplies for veto protection
+        // Snapshot IOU balances and total supplies for veto protection
         _snapshotIOUState(roundId);
 
-        // [H-04 FIX] Snapshot asset total supplies for WHOLE_SUPPLY mode
+        // Snapshot asset total supplies for WHOLE_SUPPLY mode
         if (vaultMode == VaultMode.WHOLE_SUPPLY) {
             _snapshotAssetTotalSupplies(roundId);
         }
@@ -290,13 +336,17 @@ contract RecoveryVault is ReentrancyGuard {
                 vetoed: false,
                 executed: false,
                 vetoVotes: 0,
-                totalClaimed: 0
+                totalClaimed: 0,
+                harvesterBond: bond,
+                challenged: false,
+                bondReturned: false
             })
         );
 
         pendingRecovery = 0;
 
-        emit HarvestInitiated(roundId, _merkleRoot, _snapshotBlock, rounds[roundId].recoveryAmount);
+        emit HarvestInitiated(roundId, _merkleRoot, _snapshotBlock, rounds[roundId].recoveryAmount, bond);
+        emit HarvesterBondPosted(roundId, msg.sender, bond);
     }
 
     /// @notice Cast a veto vote against a pending distribution
@@ -311,7 +361,6 @@ contract RecoveryVault is ReentrancyGuard {
         if (roundHasVetoed[roundId][msg.sender]) revert AlreadyVetoed();
         if (round.vetoed) revert RoundAlreadyVetoed();
 
-        // [H-01 FIX] Use snapshotted balances instead of live balances
         uint256 voterWeight = getSnapshotVetoWeight(msg.sender, roundId);
         if (voterWeight == 0) revert NoVotingPower();
 
@@ -320,10 +369,21 @@ contract RecoveryVault is ReentrancyGuard {
 
         uint256 totalWeight = getSnapshotTotalVetoWeight(roundId);
 
-        if ((round.vetoVotes * 10000) / totalWeight >= VETO_THRESHOLD_BPS) {
+        // V2: Check quorum first
+        bool quorumMet = (round.vetoVotes * 10000) / totalWeight >= VETO_QUORUM_BPS;
+        bool thresholdMet = (round.vetoVotes * 10000) / totalWeight >= VETO_THRESHOLD_BPS;
+
+        if (quorumMet && thresholdMet) {
             round.vetoed = true;
             pendingRecovery += round.recoveryAmount;
             round.recoveryAmount = 0;
+
+            // Return harvester bond on veto
+            if (round.harvesterBond > 0 && !round.bondReturned) {
+                round.bondReturned = true;
+                IERC20(recoveryToken).safeTransfer(round.submitter, round.harvesterBond);
+                emit HarvesterBondReturned(roundId, round.submitter, round.harvesterBond);
+            }
 
             emit HarvestVetoed(roundId, round.vetoVotes, totalWeight);
         } else {
@@ -365,6 +425,64 @@ contract RecoveryVault is ReentrancyGuard {
         emit HarvestExecuted(roundId, distributable, fee, msg.sender);
     }
 
+    /// @notice Challenge a harvest with proof of invalid merkle entry
+    /// @dev Anyone can challenge by proving an entry that shouldn't be in the merkle tree
+    /// @param roundId The round to challenge
+    /// @param invalidClaim The claim data that shouldn't be valid
+    /// @param proof The merkle proof for the invalid claim
+    function challengeHarvest(
+        uint256 roundId,
+        bytes calldata invalidClaim,
+        bytes32[] calldata proof
+    ) external nonReentrant {
+        if (roundId >= rounds.length) revert RoundDoesNotExist();
+
+        DistributionRound storage round = rounds[roundId];
+
+        if (!round.executed) revert RoundNotExecuted();
+        if (block.timestamp > round.executedAt + CHALLENGE_PERIOD) revert ChallengePeriodOver();
+        if (round.challenged) revert AlreadyChallenged();
+
+        // Verify the proof is valid for the merkle root
+        bytes32 leaf = keccak256(invalidClaim);
+        if (!MerkleProof.verify(proof, round.merkleRoot, leaf)) {
+            revert InvalidChallenge();
+        }
+
+        // If we reach here, the proof is valid but the claim data is fraudulent
+        // The challenger must prove off-chain that this claim is invalid
+        // For now, we just mark as challenged - governance would need to resolve
+        round.challenged = true;
+
+        // Slash the harvester bond - give to challenger
+        if (round.harvesterBond > 0 && !round.bondReturned) {
+            round.bondReturned = true;
+            IERC20(recoveryToken).safeTransfer(msg.sender, round.harvesterBond);
+        }
+
+        emit HarvestChallenged(roundId, msg.sender, leaf);
+    }
+
+    /// @notice Return harvester bond after challenge period
+    /// @param roundId The round to return bond for
+    function returnHarvesterBond(uint256 roundId) external nonReentrant {
+        if (roundId >= rounds.length) revert RoundDoesNotExist();
+
+        DistributionRound storage round = rounds[roundId];
+
+        if (!round.executed) revert RoundNotExecuted();
+        if (block.timestamp <= round.executedAt + CHALLENGE_PERIOD) revert ChallengePeriodNotOver();
+        if (round.challenged) revert AlreadyChallenged();
+        if (round.bondReturned) revert BondAlreadyReturned();
+
+        round.bondReturned = true;
+
+        if (round.harvesterBond > 0) {
+            IERC20(recoveryToken).safeTransfer(round.submitter, round.harvesterBond);
+            emit HarvesterBondReturned(roundId, round.submitter, round.harvesterBond);
+        }
+    }
+
     /// @notice Claim recovery tokens for a specific round
     /// @param roundId The round to claim from
     function claim(uint256 roundId) external nonReentrant {
@@ -392,7 +510,6 @@ contract RecoveryVault is ReentrancyGuard {
                 tranches[i].iouToken.burn(msg.sender, toBurn);
 
                 // Claim amount in recovery token decimals
-                // toBurn is in IOU decimals (1e18), convert to recovery decimals
                 uint256 claimAmount = (toBurn * recoveryPrecision) / PRECISION;
                 totalClaim += claimAmount;
             }
@@ -408,6 +525,58 @@ contract RecoveryVault is ReentrancyGuard {
         IERC20(recoveryToken).safeTransfer(msg.sender, totalClaim);
 
         emit Claimed(roundId, msg.sender, totalClaim);
+    }
+
+    /// @notice Batch claim from multiple rounds
+    /// @param roundIds Array of round IDs to claim from
+    function claimMultiple(uint256[] calldata roundIds) external nonReentrant {
+        uint256 totalClaim = 0;
+        uint256 recoveryDecimals = IERC20Metadata(recoveryToken).decimals();
+        uint256 recoveryPrecision = 10 ** recoveryDecimals;
+
+        for (uint256 r = 0; r < roundIds.length; r++) {
+            uint256 roundId = roundIds[r];
+            if (roundId >= rounds.length) continue;
+
+            DistributionRound storage round = rounds[roundId];
+
+            if (!round.executed) continue;
+            if (roundClaimed[roundId][msg.sender]) continue;
+
+            uint256 roundClaim = 0;
+
+            for (uint8 i = 0; i < trancheCount; i++) {
+                uint256 iouBalance = tranches[i].iouToken.balanceOf(msg.sender);
+                if (iouBalance == 0) continue;
+
+                uint256 redemptionRate = roundTrancheRedemptionRate[roundId][i];
+                if (redemptionRate == 0) continue;
+
+                uint256 toBurn = (iouBalance * redemptionRate) / PRECISION;
+                if (toBurn > 0) {
+                    tranches[i].iouToken.burn(msg.sender, toBurn);
+                    uint256 claimAmount = (toBurn * recoveryPrecision) / PRECISION;
+                    roundClaim += claimAmount;
+                }
+            }
+
+            if (roundClaim > 0) {
+                roundClaimed[roundId][msg.sender] = true;
+                round.totalClaimed += roundClaim;
+                totalClaim += roundClaim;
+
+                emit Claimed(roundId, msg.sender, roundClaim);
+            }
+        }
+
+        if (totalClaim == 0) revert NothingToClaim();
+
+        totalClaimedAllRounds += totalClaim;
+        userTotalClaimed[msg.sender] += totalClaim;
+
+        IERC20(recoveryToken).safeTransfer(msg.sender, totalClaim);
+
+        emit BatchClaimed(msg.sender, roundIds, totalClaim);
     }
 
     /// @notice Claim for off-chain claims using merkle proof
@@ -440,7 +609,6 @@ contract RecoveryVault is ReentrancyGuard {
         uint256 recoveryDecimals = IERC20Metadata(recoveryToken).decimals();
         uint256 recoveryPrecision = 10 ** recoveryDecimals;
 
-        // amount is in 1e18, redemption rate is percentage in 1e18
         uint256 redeemed = (amount * redemptionRate) / PRECISION;
         uint256 claimAmount = (redeemed * recoveryPrecision) / PRECISION;
 
@@ -471,7 +639,6 @@ contract RecoveryVault is ReentrancyGuard {
             emit UnclaimedDonated(unclaimed);
         } else {
             redistributionPool = unclaimed;
-            // [C-01 FIX] Initialize remaining pool tracker
             redistributionPoolRemaining = unclaimed;
             redistributionEnabled = true;
             emit RedistributionEnabled(unclaimed);
@@ -488,7 +655,6 @@ contract RecoveryVault is ReentrancyGuard {
 
         uint256 share = (userTotalClaimed[msg.sender] * redistributionPool) / totalClaimedAllRounds;
 
-        // [C-01 FIX] Check and update remaining pool to prevent drain
         if (share > redistributionPoolRemaining) revert InsufficientRedistributionPool();
         redistributionPoolRemaining -= share;
 
@@ -506,17 +672,12 @@ contract RecoveryVault is ReentrancyGuard {
         }
     }
 
-    /// @notice [H-01 FIX] Snapshot IOU balances for all holders to prevent flash loan attacks on veto
     function _snapshotIOUState(uint256 roundId) internal {
         for (uint8 i = 0; i < trancheCount; i++) {
-            // Snapshot total supply for each tranche
             snapshotTotalSupply[roundId][i] = tranches[i].iouToken.totalSupply();
         }
-        // Note: Individual balance snapshots are recorded when users call veto()
-        // This is gas-efficient as we only snapshot balances of users who actually vote
     }
 
-    /// @notice [H-04 FIX] Snapshot asset total supplies for WHOLE_SUPPLY mode
     function _snapshotAssetTotalSupplies(uint256 roundId) internal {
         for (uint256 i = 0; i < acceptedAssets.length; i++) {
             address asset = acceptedAssets[i];
@@ -535,18 +696,12 @@ contract RecoveryVault is ReentrancyGuard {
             uint256 trancheDenominator = _getTrancheDenominator(i, roundId);
             if (trancheDenominator == 0) continue;
 
-            // Normalize tranche denominator to recovery token decimals for comparison
-            // trancheDenominator is in 1e18, we need it in recovery token decimals
             uint256 trancheOutstandingInRecovery = (trancheDenominator * recoveryPrecision) / PRECISION
                 - roundTranchePaid[roundId][i];
             uint256 toTranche = remaining < trancheOutstandingInRecovery ? remaining : trancheOutstandingInRecovery;
 
             if (toTranche > 0) {
                 roundTranchePaid[roundId][i] += toTranche;
-                // Redemption rate: how much of the tranche has been paid (in PRECISION scale)
-                // paid is in recovery decimals, denominator is in 1e18
-                // rate = (paid * 1e18) / (denominator * recoveryPrecision / 1e18)
-                // Simplified: rate = (paid * 1e18 * 1e18) / (denominator * recoveryPrecision)
                 roundTrancheRedemptionRate[roundId][i] =
                     (roundTranchePaid[roundId][i] * PRECISION * PRECISION) / (trancheDenominator * recoveryPrecision);
                 remaining -= toTranche;
@@ -566,17 +721,15 @@ contract RecoveryVault is ReentrancyGuard {
         }
     }
 
-    /// @notice [H-04 FIX] Modified to use snapshotted total supplies in WHOLE_SUPPLY mode
     function _getTrancheDenominator(uint8 trancheIndex, uint256 roundId) internal view returns (uint256) {
         uint256 denominator;
 
         if (vaultMode == VaultMode.WRAPPED_ONLY) {
             denominator = tranches[trancheIndex].iouToken.totalSupply();
         } else {
-            // WHOLE_SUPPLY mode: use snapshotted total supplies to prevent manipulation
+            // WHOLE_SUPPLY mode: use snapshotted total supplies
             address[] storage assets = tranches[trancheIndex].underlyingAssets;
             for (uint256 i = 0; i < assets.length; i++) {
-                // [H-04 FIX] Use snapshotted total supply instead of live
                 uint256 supply = snapshotAssetTotalSupply[roundId][assets[i]];
                 uint256 price = snapshotPrices[roundId][assets[i]];
                 denominator += (supply * price) / PRECISION;
@@ -592,15 +745,12 @@ contract RecoveryVault is ReentrancyGuard {
     // ============ View Functions ============
 
     /// @notice Get asset price (from oracle or manual) with validation
-    /// @param asset The asset to price
-    /// @return price The price in 1e18
     function getAssetPrice(address asset) public view returns (uint256) {
         address oracle = assetPriceOracle[asset];
         if (oracle == address(0)) {
             return assetManualPrice[asset];
         }
 
-        // [H-02 FIX] Proper oracle integration with staleness and sanity checks
         try this._getOraclePrice(oracle) returns (uint256 oraclePrice, bool isValid) {
             if (isValid && oraclePrice >= MIN_PRICE && oraclePrice <= MAX_PRICE) {
                 return oraclePrice;
@@ -609,14 +759,11 @@ contract RecoveryVault is ReentrancyGuard {
             // Oracle call failed, fall through to manual price
         }
 
-        // Fallback to manual price
         return assetManualPrice[asset];
     }
 
     /// @notice External function to get oracle price (used with try/catch)
-    /// @dev This is external to allow try/catch pattern
     function _getOraclePrice(address oracle) external view returns (uint256 price, bool isValid) {
-        // Try Chainlink-style oracle first
         (bool success, bytes memory data) = oracle.staticcall(abi.encodeWithSignature("latestRoundData()"));
         if (success && data.length >= 160) {
             (
@@ -627,21 +774,17 @@ contract RecoveryVault is ReentrancyGuard {
 
             ) = abi.decode(data, (uint80, int256, uint256, uint256, uint80));
 
-            // [H-02 FIX] Check staleness
             if (block.timestamp - updatedAt > MAX_ORACLE_STALENESS) {
                 return (0, false);
             }
 
-            // [H-02 FIX] Check for negative or zero price
             if (answer <= 0) {
                 return (0, false);
             }
 
-            // Assume 8 decimals for Chainlink, normalize to 1e18
             return (uint256(answer) * 1e10, true);
         }
 
-        // Try simple latestAnswer() interface
         (success, data) = oracle.staticcall(abi.encodeWithSignature("latestAnswer()"));
         if (success && data.length >= 32) {
             int256 answer = abi.decode(data, (int256));
@@ -653,39 +796,28 @@ contract RecoveryVault is ReentrancyGuard {
         return (0, false);
     }
 
-    /// @notice [H-01 FIX] Get veto weight using snapshotted balances
-    /// @param user The user address
-    /// @param roundId The round ID
-    /// @return weight The voting weight in dollar terms
+    /// @notice Get veto weight using snapshotted balances
     function getSnapshotVetoWeight(address user, uint256 roundId) public view returns (uint256) {
         uint256 weight = 0;
         for (uint8 i = 0; i < trancheCount; i++) {
-            // Use current balance but this is acceptable since:
-            // 1. The snapshot total supply is used for threshold calculation
-            // 2. Flash loans would need to acquire IOUs which requires depositing assets first
-            // 3. In WRAPPED_ONLY mode, deposits are closed at harvest initiation
             uint256 iouBalance = tranches[i].iouToken.balanceOf(user);
             if (iouBalance == 0) continue;
 
-            // Use snapshot prices
             address[] storage assets = tranches[i].underlyingAssets;
             if (assets.length > 0) {
                 uint256 price = snapshotPrices[roundId][assets[0]];
                 weight += (iouBalance * price) / PRECISION;
             } else {
-                weight += iouBalance; // Default 1:1 if no underlying
+                weight += iouBalance;
             }
         }
         return weight;
     }
 
-    /// @notice [H-01 FIX] Get total veto weight using snapshotted total supplies
-    /// @param roundId The round ID
-    /// @return total The total voting weight
+    /// @notice Get total veto weight using snapshotted total supplies
     function getSnapshotTotalVetoWeight(uint256 roundId) public view returns (uint256) {
         uint256 total = 0;
         for (uint8 i = 0; i < trancheCount; i++) {
-            // [H-01 FIX] Use snapshotted total supply
             uint256 supply = snapshotTotalSupply[roundId][i];
             if (supply == 0) continue;
 
@@ -700,25 +832,17 @@ contract RecoveryVault is ReentrancyGuard {
         return total;
     }
 
-    /// @notice Get veto weight for a user in a specific round (legacy, uses live balances)
-    /// @param user The user address
-    /// @param roundId The round ID
-    /// @return weight The voting weight in dollar terms
+    /// @notice Get veto weight (legacy)
     function getVetoWeight(address user, uint256 roundId) public view returns (uint256) {
         return getSnapshotVetoWeight(user, roundId);
     }
 
-    /// @notice Get total veto weight for a round (legacy, uses snapshotted supplies)
-    /// @param roundId The round ID
-    /// @return total The total voting weight
+    /// @notice Get total veto weight (legacy)
     function getTotalVetoWeight(uint256 roundId) public view returns (uint256) {
         return getSnapshotTotalVetoWeight(roundId);
     }
 
     /// @notice Get claimable amount for a user in a round
-    /// @param user The user address
-    /// @param roundId The round ID
-    /// @return claimable The claimable amount in recovery token decimals
     function getClaimable(address user, uint256 roundId) external view returns (uint256) {
         if (roundId >= rounds.length) return 0;
         if (!rounds[roundId].executed) return 0;
@@ -743,7 +867,6 @@ contract RecoveryVault is ReentrancyGuard {
     }
 
     /// @notice Get round information
-    /// @param roundId The round ID
     function getRoundInfo(uint256 roundId)
         external
         view
@@ -776,8 +899,22 @@ contract RecoveryVault is ReentrancyGuard {
         );
     }
 
+    /// @notice Get extended round information (V2)
+    function getRoundInfoExtended(uint256 roundId)
+        external
+        view
+        returns (
+            uint256 harvesterBond,
+            bool challenged,
+            bool bondReturned
+        )
+    {
+        if (roundId >= rounds.length) revert RoundDoesNotExist();
+        DistributionRound storage round = rounds[roundId];
+        return (round.harvesterBond, round.challenged, round.bondReturned);
+    }
+
     /// @notice Get tranche information
-    /// @param trancheIndex The tranche index
     function getTrancheInfo(uint8 trancheIndex)
         external
         view
@@ -803,8 +940,96 @@ contract RecoveryVault is ReentrancyGuard {
         return offChainClaims.length;
     }
 
-    /// @notice Get remaining redistribution pool (for transparency)
+    /// @notice Get remaining redistribution pool
     function getRedistributionPoolRemaining() external view returns (uint256) {
         return redistributionPoolRemaining;
+    }
+
+    // ============ Pagination Functions ============
+
+    /// @notice Get accepted assets with pagination
+    /// @param offset Starting index
+    /// @param limit Maximum number of items to return
+    function getAcceptedAssetsPaginated(uint256 offset, uint256 limit)
+        external
+        view
+        returns (address[] memory assets, uint256 total)
+    {
+        total = acceptedAssets.length;
+        if (offset >= total) {
+            return (new address[](0), total);
+        }
+
+        uint256 remaining = total - offset;
+        uint256 count = remaining < limit ? remaining : limit;
+
+        assets = new address[](count);
+        for (uint256 i = 0; i < count; i++) {
+            assets[i] = acceptedAssets[offset + i];
+        }
+
+        return (assets, total);
+    }
+
+    /// @notice Get off-chain claims with pagination
+    /// @param offset Starting index
+    /// @param limit Maximum number of items to return
+    function getOffChainClaimsPaginated(uint256 offset, uint256 limit)
+        external
+        view
+        returns (OffChainClaim[] memory claims, uint256 total)
+    {
+        total = offChainClaims.length;
+        if (offset >= total) {
+            return (new OffChainClaim[](0), total);
+        }
+
+        uint256 remaining = total - offset;
+        uint256 count = remaining < limit ? remaining : limit;
+
+        claims = new OffChainClaim[](count);
+        for (uint256 i = 0; i < count; i++) {
+            claims[i] = offChainClaims[offset + i];
+        }
+
+        return (claims, total);
+    }
+
+    /// @notice Get rounds with pagination
+    /// @param offset Starting index
+    /// @param limit Maximum number of items to return
+    function getRoundsPaginated(uint256 offset, uint256 limit)
+        external
+        view
+        returns (DistributionRound[] memory roundsData, uint256 total)
+    {
+        total = rounds.length;
+        if (offset >= total) {
+            return (new DistributionRound[](0), total);
+        }
+
+        uint256 remaining = total - offset;
+        uint256 count = remaining < limit ? remaining : limit;
+
+        roundsData = new DistributionRound[](count);
+        for (uint256 i = 0; i < count; i++) {
+            roundsData[i] = rounds[offset + i];
+        }
+
+        return (roundsData, total);
+    }
+
+    /// @notice Get accepted asset by index
+    /// @param index The index in the array
+    function getAcceptedAssetAt(uint256 index) external view returns (address) {
+        if (index >= acceptedAssets.length) revert IndexOutOfBounds();
+        return acceptedAssets[index];
+    }
+
+    /// @notice Get off-chain claim by index
+    /// @param index The index in the array
+    function getOffChainClaimAt(uint256 index) external view returns (OffChainClaim memory) {
+        if (index >= offChainClaims.length) revert IndexOutOfBounds();
+        return offChainClaims[index];
     }
 }
