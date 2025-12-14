@@ -419,6 +419,223 @@ A complete subgraph schema is provided in `/subgraph` for indexing with The Grap
 4. **Insurance Payouts**: Structured distribution of insurance claims
 5. **Legal Settlements**: On-chain distribution of court-ordered recoveries
 
+---
+
+## Insolvency Killswitch Module
+
+The **Insolvency Killswitch** is a proactive insolvency detection and governance module that can be natively integrated into tokenized funds. It monitors redemption queues and triggers insolvency proceedings when the fund fails to meet obligations.
+
+### How It Works
+
+```
+INSOLVENCY KILLSWITCH FLOW
+==========================
+
+     Fund Operating Normally
+              |
+              v
+     +------------------------+
+     | REDEMPTION MONITORING  |
+     | Track unfulfilled      |
+     | redemption requests    |
+     +------------------------+
+              |
+              v (7-day breach)
+     +------------------------+
+     | BREACH DETECTED        |
+     | Grace period for       |
+     | fund manager           |
+     +------------------------+
+              |
+              v (Settlement period expires)
+     +------------------------+
+     | INSOLVENCY DECLARED    |
+     | - Transfers locked     |
+     | - Snapshot taken       |
+     | - Voting enabled       |
+     +------------------------+
+              |
+       +------+------+
+       |             |
+       v             v
++------------+  +------------+
+| SETTLEMENT |  | LIQUIDATION|
+| PROPOSED   |  | (Timeout)  |
+| (Haircut)  |  |            |
++------------+  +------------+
+       |             |
+       v             v
++------------------------+
+|   WATERFALL VAULT      |
+|   Priority-based       |
+|   distribution         |
++------------------------+
+```
+
+### Jurisdiction Templates
+
+The protocol supports jurisdiction-specific governance thresholds based on real-world insolvency law:
+
+```
++-------------------+------------+---------------+-------------+-----------------+
+| Jurisdiction      | Approval   | Headcount     | Dual Test   | Settlement      |
+|                   | Threshold  | Threshold     | Required?   | Period          |
++-------------------+------------+---------------+-------------+-----------------+
+| US Chapter 11     | 66.67%     | 50%+          | Yes         | 30 days         |
+| US Chapter 7      | N/A        | N/A           | No          | Direct liquidate|
+| UK CVA            | 75%        | 50%+          | Yes         | 28 days         |
+| UK Administration | 50%+       | N/A           | No          | 14 days         |
+| Germany InsO      | 50%+       | 50%+          | Yes         | 21 days         |
+| Germany StaRUG    | 75%        | N/A           | No          | 21 days         |
+| Singapore IRDA    | 75%        | 50%+          | Yes         | 30 days         |
+| Cayman Liquidation| 75%        | N/A           | No          | 21 days         |
+| DeFi Standard     | 66.67%     | 50%+          | Yes         | 30 days         |
++-------------------+------------+---------------+-------------+-----------------+
+```
+
+#### Why These Thresholds?
+
+| Source | Threshold | Rationale |
+|--------|-----------|-----------|
+| **US Chapter 11** (11 U.S.C. § 1126) | 66.67% value + 50% number | Prevents whale tyranny AND mob tyranny |
+| **UK CVA** (Insolvency Act 1986) | 75% value | Higher threshold for voluntary arrangements |
+| **Germany StaRUG** | 75% value only | Streamlined for preventive restructuring |
+| **Singapore IRDA** | 75% + 50% | Strong dual protection |
+| **DeFi Standard** | Hybrid | Best practices from multiple jurisdictions |
+
+### Creating a Vault with Jurisdiction
+
+```solidity
+// Create vault following US Chapter 11 rules
+address vault = factory.createVaultWithJurisdiction(
+    "Fund XYZ Insolvency",
+    TemplateType.TWO_TRANCHE_DEBT_EQUITY,
+    VaultMode.WHOLE_SUPPLY,
+    address(usdc),
+    assets,
+    offChainClaims,
+    UnclaimedFundsOption.REDISTRIBUTE_PRO_RATA,
+    Jurisdiction.US_CHAPTER_11  // Legal compliance
+);
+```
+
+### Installing the Killswitch
+
+```solidity
+// Deploy killswitch for a tokenized fund
+InsolvencyKillswitch killswitch = new InsolvencyKillswitch(
+    address(fundToken),        // Token to monitor
+    address(usdc),             // Recovery token
+    fundManager,               // Fund manager address
+    Jurisdiction.DEFI_STANDARD,// Jurisdiction rules
+    address(waterfallFactory)  // Creates vaults on liquidation
+);
+
+// Allow killswitch to lock transfers
+fundToken.setKillswitch(address(killswitch));
+```
+
+### Killswitch Lifecycle
+
+1. **Creditor Requests Redemption**
+   ```solidity
+   killswitch.requestRedemption(amount);
+   ```
+
+2. **Fund Manager Fulfills (Normal Operation)**
+   ```solidity
+   killswitch.fulfillRedemption(requestId);
+   ```
+
+3. **Breach Detected (7 Days Unfulfilled)**
+   - Automatic detection
+   - Fund manager gets grace period
+
+4. **Extension Available**
+   ```solidity
+   // Post 10% deposit for extra time
+   killswitch.requestExtension();
+   ```
+
+5. **Insolvency Declaration**
+   ```solidity
+   // Anyone can call after grace period
+   killswitch.declareInsolvency();
+   // Transfers locked, snapshot taken
+   ```
+
+6. **Settlement Proposal**
+   ```solidity
+   // Fund manager proposes haircut
+   killswitch.proposeSettlement(
+       800_000e6,  // Total offered
+       2000,       // 20% haircut
+       "ipfs://terms"
+   );
+   ```
+
+7. **Creditor Voting**
+   ```solidity
+   killswitch.castVote(VoteType.APPROVE);
+   ```
+
+8. **Finalization**
+   ```solidity
+   killswitch.finalizeVote();
+   // Either SETTLEMENT_ACCEPTED or back to INSOLVENT
+   ```
+
+9. **Execution or Liquidation**
+   ```solidity
+   // If approved
+   killswitch.executeSettlement();
+
+   // If timeout (default judgment)
+   killswitch.triggerLiquidation();
+   ```
+
+### Jurisdiction Validation
+
+The factory enforces jurisdiction rules:
+
+```solidity
+// US Chapter 11 requires absolute priority
+// This would REVERT:
+factory.createVaultWithJurisdiction(
+    "Invalid Vault",
+    TemplateType.PARI_PASSU,       // Pari passu not allowed
+    VaultMode.WHOLE_SUPPLY,
+    address(usdc),
+    assets,
+    claims,
+    UnclaimedFundsOption.REDISTRIBUTE_PRO_RATA,
+    Jurisdiction.US_CHAPTER_11    // Requires priority tranches
+);
+```
+
+---
+
+## Architecture (Full)
+
+```
++------------------+     +------------------------+
+|  VaultFactory    |     | InsolvencyKillswitch   |
++--------+---------+     +-----------+------------+
+         |                           |
+         | creates                   | creates (on liquidation)
+         v                           v
++------------------+     +------------------------+
+|  RecoveryVault   |<----|  JurisdictionTemplates |
+|  (Distribution)  |     |  (Legal Compliance)    |
++--------+---------+     +------------------------+
+         |
+         v
++------------------+
+|   TrancheIOU     |
+|   (Claim Token)  |
++------------------+
+```
+
 ## License
 
 MIT
