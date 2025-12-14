@@ -1,204 +1,259 @@
 # Waterfall Protocol
 
-A permissionless, immutable DeFi coordination layer for distressed asset recovery with waterfall distribution mechanics.
+**DeFi's First Decentralized Insolvency Protocol**
+
+A permissionless, immutable, creditor-governed on-chain insolvency framework for distressed crypto assets.
 
 ## Overview
 
-Waterfall Protocol enables transparent recovery processes for distressed crypto assets (depeg events, hacks, failed protocols) by implementing traditional finance waterfall structures on-chain.
+Waterfall Protocol brings traditional bankruptcy mechanics on-chain, enabling transparent and fair recovery proceedings for distressed crypto assets (depeg events, hacks, protocol failures). It implements the **absolute priority rule** used in Chapter 7/11 bankruptcy through smart contract-enforced waterfall distributions.
 
 ```
-                         WATERFALL PROTOCOL
-    ============================================================
+                      ON-CHAIN INSOLVENCY PROTOCOL
+    ================================================================
 
-    Distressed Asset Holders          Recovery Providers
+    Creditors (Token Holders)           Recovery Estate
             |                               |
             v                               v
     +---------------+              +---------------+
-    | Deposit xUSD  |              | Deposit USDC  |
-    | Deposit LP    |              | (Recovery)    |
+    | File Claim    |              | Deposit       |
+    | (Deposit      |              | Recovery      |
+    | Distressed    |              | Assets        |
+    | Tokens)       |              | (USDC, etc)   |
     +---------------+              +---------------+
             |                               |
             v                               v
     +--------------------------------------------------+
-    |                 RECOVERY VAULT                    |
+    |              INSOLVENCY VAULT                     |
     |  +------------+  +------------+  +------------+  |
-    |  |  SENIOR    |  | MEZZANINE  |  |   JUNIOR   |  |
-    |  |  (Debt)    |  |            |  |  (Equity)  |  |
+    |  |  SECURED   |  |  SENIOR    |  |  JUNIOR    |  |
+    |  |  (First)   |  | (Second)   |  |  (Last)    |  |
     |  +------------+  +------------+  +------------+  |
     +--------------------------------------------------+
                             |
                             v
-                  WATERFALL DISTRIBUTION
+              WATERFALL DISTRIBUTION
+              (Absolute Priority Rule)
                             |
             +---------------+---------------+
             |               |               |
             v               v               v
-        SENIOR          MEZZANINE        JUNIOR
-        FIRST           SECOND           LAST
-        (100%)          (if excess)      (remainder)
+        SECURED         SENIOR          JUNIOR
+        100% FIRST      IF EXCESS       REMAINDER
 ```
+
+## Bankruptcy Terminology Mapping
+
+| Traditional Bankruptcy | Waterfall Protocol |
+|----------------------|-------------------|
+| Chapter 7/11 Filing | Vault Creation |
+| Bankruptcy Estate | Recovery Token Pool |
+| Proof of Claim | Deposit → IOU Token |
+| Priority Classes | Tranches (Senior/Mezz/Junior) |
+| Absolute Priority Rule | Waterfall Distribution |
+| Creditor Committee | IOU Holders (Veto Power) |
+| Bankruptcy Trustee | Harvester (Bonded) |
+| Claims Bar Date | Deposits Close (WRAPPED_ONLY) |
+| Distribution Plan | Merkle Root + Redemption Rates |
+| Unclaimed Property | 365-Day Redistribution |
 
 ## How It Works
 
-### 1. Vault Creation
+### 1. Vault Creation (Filing for Insolvency)
 
-Anyone can create a vault for a distressed asset recovery using predefined templates:
-
-```
-TEMPLATE OPTIONS:
-+==============================================+
-|  Template Type           | Tranches         |
-+==============================================+
-|  TWO_TRANCHE_DEBT_EQUITY | Senior, Junior   |
-|  THREE_TRANCHE           | Senior, Mezz,    |
-|                          | Junior           |
-|  FOUR_TRANCHE            | Secured, Senior, |
-|                          | Mezz, Equity     |
-|  PARI_PASSU              | Equal (1 tranche)|
-+==============================================+
-```
-
-### 2. Depositing Distressed Assets
-
-Token holders deposit their distressed assets and receive IOU tokens representing their claim:
+Anyone can create an insolvency vault for a distressed asset using predefined priority structures:
 
 ```
-USER DEPOSITS 1000 xUSD (valued at $1.00)
+PRIORITY STRUCTURE TEMPLATES:
++================================================+
+|  Template                    | Priority Classes |
++================================================+
+|  TWO_TRANCHE_DEBT_EQUITY     | Senior, Junior   |
+|  THREE_TRANCHE               | Senior, Mezz,    |
+|                              | Junior           |
+|  FOUR_TRANCHE                | Secured, Senior, |
+|                              | Mezz, Equity     |
+|  PARI_PASSU                  | Equal (1 class)  |
++================================================+
+```
+
+### 2. Filing Claims (Depositing Distressed Assets)
+
+Creditors deposit their distressed tokens and receive IOU tokens representing their claim:
+
+```
+CREDITOR FILES CLAIM: 1000 xUSD (valued at $1.00)
                 |
                 v
 +----------------------------------+
-|   VAULT DEPOSIT LOGIC            |
-|   asset_price = $1.00            |
-|   iou_amount = 1000 * $1.00      |
-|              = 1000 wf-Senior    |
+|   CLAIM PROCESSING               |
+|   asset_value = 1000 * $1.00     |
+|   claim_amount = $1000           |
+|   class = Senior                 |
 +----------------------------------+
                 |
                 v
-USER RECEIVES: 1000 wf-Senior IOUs
+CREDITOR RECEIVES: 1000 wf-Senior (IOU Token)
 ```
 
-### 3. Recovery Distribution (Waterfall)
+### 3. Distribution (Waterfall / Absolute Priority)
 
-When recovery funds arrive, they flow through the waterfall:
+When recovery assets arrive, they flow through the waterfall following the absolute priority rule:
 
 ```
-WATERFALL DISTRIBUTION EXAMPLE
-==============================
+DISTRIBUTION EXAMPLE
+====================
 
-Total Claims: $500,000
- - Senior:    $300,000 (60%)
- - Junior:    $200,000 (40%)
+Total Claims by Class:
+ - Secured:  $100,000
+ - Senior:   $300,000
+ - Junior:   $200,000
+ - TOTAL:    $600,000
 
-Recovery Amount: $400,000 (80% recovery rate)
+Recovery Estate: $450,000 (75% recovery rate)
 
-DISTRIBUTION FLOW:
+WATERFALL FLOW:
 
-  Recovery: $400,000
+  Estate: $450,000
        |
        v
 +-------------+
-|   SENIOR    | <- Gets $300,000 (100% of claim)
+|   SECURED   | <- Gets $100,000 (100% recovery)
+|   $100,000  |
++-------------+
+       |
+       | Remaining: $350,000
+       v
++-------------+
+|   SENIOR    | <- Gets $300,000 (100% recovery)
 |   $300,000  |
 +-------------+
        |
-       | Remaining: $100,000
+       | Remaining: $50,000
        v
 +-------------+
-|   JUNIOR    | <- Gets $100,000 (50% of claim)
+|   JUNIOR    | <- Gets $50,000 (25% recovery)
 |   $200,000  |
 +-------------+
 
 RESULT:
-+--------+---------+---------+----------+
-| Tranche| Claim   | Received| Recovery |
-+--------+---------+---------+----------+
-| Senior | $300,000| $300,000|   100%   |
-| Junior | $200,000| $100,000|    50%   |
-+--------+---------+---------+----------+
-| TOTAL  | $500,000| $400,000|    80%   |
-+--------+---------+---------+----------+
++----------+---------+-----------+----------+
+| Class    | Claim   | Received  | Recovery |
++----------+---------+-----------+----------+
+| Secured  | $100,000| $100,000  |   100%   |
+| Senior   | $300,000| $300,000  |   100%   |
+| Junior   | $200,000|  $50,000  |    25%   |
++----------+---------+-----------+----------+
+| TOTAL    | $600,000| $450,000  |    75%   |
++----------+---------+-----------+----------+
 ```
 
-### 4. IOU Burn-on-Claim Mechanism
+### 4. Claim Redemption (IOU Burn Mechanism)
 
-When users claim, their IOUs are burned proportionally:
+When creditors redeem their claims, IOUs are burned proportionally:
 
 ```
-CLAIM EXAMPLE
-=============
+REDEMPTION EXAMPLE
+==================
 
 Alice holds: 1000 wf-Senior IOUs (out of 300,000 total)
-Senior Recovery Rate: 100%
+Senior Class Recovery Rate: 100%
 
-CLAIM CALCULATION:
+REDEMPTION CALCULATION:
 +------------------------------------------+
 |  iou_balance = 1000                      |
-|  redemption_rate = 100% (1e18)           |
-|  to_burn = 1000 * 100% = 1000            |
-|  claim_amount = 1000 USDC                |
+|  class_recovery_rate = 100%              |
+|  redemption_amount = 1000 * 100%         |
+|                    = 1000 USDC           |
 +------------------------------------------+
 
-BEFORE CLAIM:            AFTER CLAIM:
-Alice: 1000 IOUs   ->    Alice: 0 IOUs
-       0 USDC      ->           1000 USDC
+BEFORE:              AFTER:
+Alice: 1000 IOUs  -> Alice: 0 IOUs
+       0 USDC     ->        1000 USDC
 ```
 
-### 5. Veto Mechanism
+### 5. Creditor Committee (Veto Mechanism)
 
 IOU holders can veto suspicious distribution proposals:
 
 ```
-VETO PROCESS TIMELINE
+CREDITOR VETO PROCESS
 =====================
 
-Day 0: Harvest Initiated
+Day 0: Distribution Proposed
   |
   |  +-----------------------------+
   |  | VETO WINDOW: 3 DAYS         |
   |  | Threshold: 10% of $ value   |
+  |  | Quorum: 5% participation    |
   |  +-----------------------------+
   |
   v
-Day 3: If not vetoed, execute harvest
+Day 3: If not vetoed → Execute Distribution
   |
   v
 Distribution Complete
 
-VETO WEIGHT CALCULATION:
-+----------------------------------------+
-| weight = sum of (iou_balance * price)  |
-| for each tranche the user holds IOUs   |
-+----------------------------------------+
+VETO WEIGHT = sum of (iou_balance * asset_price)
+              for each class the creditor holds
 
-If total_veto_weight >= 10% of total_weight:
-  -> Round VETOED
-  -> Recovery funds returned to pending
-  -> 24-hour cooldown before next attempt
-  -> Original submitter banned from resubmit
+If total_veto_weight >= 10% of total_claims:
+  → Distribution VETOED
+  → Recovery assets returned to pending
+  → 24-hour cooldown before next proposal
+  → Original proposer banned from resubmitting
 ```
 
-### 6. Unclaimed Funds Handling
+### 6. Trustee Accountability (Harvester Bond)
 
-After 1 year, unclaimed funds can be distributed:
+Harvesters must post a bond when proposing distributions:
 
 ```
-UNCLAIMED FUNDS OPTIONS
-=======================
+HARVESTER BOND MECHANISM
+========================
+
+1. Harvester posts 1% bond when initiating distribution
+2. 7-day challenge period after execution
+3. If challenged successfully → bond slashed to challenger
+4. If no challenge → bond returned after period
+
++------------------+     +------------------+
+|  INITIATE        | --> |  EXECUTE         |
+|  Post 1% bond    |     |  3-day timelock  |
++------------------+     +------------------+
+                               |
+                               v
+                    +------------------+
+                    |  CHALLENGE       |
+                    |  7-day window    |
+                    +------------------+
+                         /         \
+                        v           v
+              +----------+     +----------+
+              | SLASHED  |     | RETURNED |
+              | (fraud)  |     | (clean)  |
+              +----------+     +----------+
+```
+
+### 7. Unclaimed Property
+
+After 1 year, unclaimed distributions can be handled:
+
+```
+UNCLAIMED PROPERTY OPTIONS
+==========================
 
 Option 1: REDISTRIBUTE_PRO_RATA
 +------------------------------------------+
-|                                          |
-|  Unclaimed    Claimants who already      |
-|  Funds    ->  claimed get proportional   |
-|               share of unclaimed         |
+|  Unclaimed     Creditors who claimed     |
+|  Assets    ->  receive proportional      |
+|                share of unclaimed        |
 +------------------------------------------+
 
 Option 2: DONATE_TO_WATERFALL
 +------------------------------------------+
-|                                          |
-|  Unclaimed    Waterfall Treasury         |
-|  Funds    ->  (DAO-controlled)           |
-|                                          |
+|  Unclaimed     Protocol Treasury         |
+|  Assets    ->  (DAO-controlled)          |
 +------------------------------------------+
 ```
 
@@ -206,20 +261,22 @@ Option 2: DONATE_TO_WATERFALL
 
 ```
 +------------------+
-|  VaultFactory    |  Creates vaults with templates
+|  VaultFactory    |  Creates insolvency vaults
 +--------+---------+
          |
          | creates
          v
 +------------------+     +------------------+
 |  RecoveryVault   |---->|   TrancheIOU     |
-|                  |     |   (ERC20)        |
-|  - Deposits      |     +------------------+
-|  - Waterfall     |
-|  - Claims        |     +------------------+
-|  - Veto          |---->|   Templates      |
-|  - Redistribution|     |   (Library)      |
-+------------------+     +------------------+
+|  (Insolvency     |     |   (Claim Token)  |
+|   Proceeding)    |     +------------------+
+|                  |
+|  - Claim Filing  |     +------------------+
+|  - Waterfall     |---->|   Templates      |
+|  - Distribution  |     |   (Priority      |
+|  - Veto          |     |    Structures)   |
+|  - Challenges    |     +------------------+
++------------------+
 ```
 
 ## Installation
@@ -244,103 +301,123 @@ forge coverage
 
 ## Usage
 
-### Creating a Vault
+### Creating an Insolvency Vault
 
 ```solidity
-// Define accepted assets with their tranche assignments
+// Define accepted claims with their priority class
 RecoveryVault.AssetConfig[] memory assets = new RecoveryVault.AssetConfig[](2);
 assets[0] = RecoveryVault.AssetConfig({
     assetAddress: address(xUSD),
-    trancheIndex: 0, // Senior
-    priceOracle: address(0), // Manual price
+    trancheIndex: 0, // Senior (first priority)
+    priceOracle: address(0),
     manualPrice: 1e18 // $1
 });
 assets[1] = RecoveryVault.AssetConfig({
     assetAddress: address(lpToken),
-    trancheIndex: 1, // Junior
+    trancheIndex: 1, // Junior (second priority)
     priceOracle: address(lpOracle),
     manualPrice: 0
 });
 
-// Create the vault
+// Create the insolvency vault
 address vault = factory.createVault(
-    "xUSD Recovery",
+    "xUSD Insolvency Proceeding",
     TemplateType.TWO_TRANCHE_DEBT_EQUITY,
     VaultMode.WRAPPED_ONLY,
-    address(usdc), // Recovery token
+    address(usdc), // Recovery asset
     assets,
     offChainClaims,
     UnclaimedFundsOption.REDISTRIBUTE_PRO_RATA
 );
 ```
 
-### Depositing Assets
+### Filing a Claim (Depositing)
 
 ```solidity
-// Approve vault to spend your distressed tokens
+// Approve vault to accept distressed tokens
 xUSD.approve(address(vault), amount);
 
-// Deposit and receive IOUs
+// File claim - receive IOU tokens
 vault.deposit(address(xUSD), amount);
+
+// Or batch file multiple claims
+vault.depositMultiple(
+    [address(xUSD), address(lpToken)],
+    [amount1, amount2]
+);
 ```
 
 ### Initiating Distribution
 
 ```solidity
-// Anyone can initiate a harvest when recovery funds are available
+// Harvester posts bond and initiates distribution
+usdc.approve(address(vault), bondAmount);
 vault.initiateHarvest(merkleRoot, snapshotBlock);
 
 // Wait 3 days for veto period
 // ...
 
-// Execute the harvest
+// Execute the distribution
 vault.executeHarvest(roundId);
+
+// After 7-day challenge period, reclaim bond
+vault.returnHarvesterBond(roundId);
 ```
 
-### Claiming Recovery
+### Redeeming Claims
 
 ```solidity
-// Claim your share from a completed round
+// Redeem from a single distribution round
 vault.claim(roundId);
+
+// Or batch redeem from multiple rounds
+vault.claimMultiple([roundId1, roundId2, roundId3]);
 ```
 
-## Merkle Tree Generation
+## Key Parameters
 
-The `scripts/` directory contains a TypeScript tool to generate merkle trees for distribution snapshots:
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| HARVEST_TIMELOCK | 3 days | Veto window before distribution |
+| VETO_THRESHOLD_BPS | 1000 | 10% of claims needed to veto |
+| VETO_QUORUM_BPS | 500 | 5% minimum participation |
+| VETO_COOLDOWN | 1 day | Cooldown after vetoed distribution |
+| HARVESTER_FEE_BPS | 10 | 0.1% fee to distribution executor |
+| HARVESTER_BOND_BPS | 100 | 1% bond required from harvester |
+| CHALLENGE_PERIOD | 7 days | Window to challenge distributions |
+| UNCLAIMED_DEADLINE | 365 days | Time before unclaimed redistribution |
 
-```bash
-cd scripts
-npm install
-npm run generate
-```
+## Security Features
+
+- **Immutable**: No admin functions, no upgradability after deployment
+- **Reentrancy Protected**: All state-changing functions use ReentrancyGuard
+- **Oracle Validation**: Staleness checks, price bounds, Chainlink integration
+- **Snapshot Protection**: IOU supplies snapshotted at distribution initiation
+- **Creditor Governance**: 10% threshold + 5% quorum for veto
+- **Trustee Accountability**: 1% bond slashable for fraudulent distributions
+- **Challenge Period**: 7-day window to dispute executed distributions
 
 ## Test Coverage
 
 ```
 | Contract          | Lines   | Statements | Branches | Functions |
 |-------------------|---------|------------|----------|-----------|
-| RecoveryVault.sol | 99.13%  | 98.45%     | 93.22%   | 100%      |
+| RecoveryVault.sol | 95%+    | 95%+       | 90%+     | 100%      |
 | TrancheIOU.sol    | 100%    | 100%       | 100%     | 100%      |
 | VaultFactory.sol  | 100%    | 100%       | 87.50%   | 100%      |
 ```
 
-## Key Parameters
+## Subgraph
 
-| Parameter          | Value    | Description                           |
-|--------------------|----------|---------------------------------------|
-| HARVEST_TIMELOCK   | 3 days   | Veto window duration                  |
-| VETO_THRESHOLD_BPS | 1000     | 10% of total $ value to veto          |
-| VETO_COOLDOWN      | 1 day    | Cooldown after vetoed round           |
-| HARVESTER_FEE_BPS  | 1        | 0.01% fee to harvest executor         |
-| UNCLAIMED_DEADLINE | 365 days | Time before unclaimed redistribution  |
+A complete subgraph schema is provided in `/subgraph` for indexing with The Graph.
 
-## Security Considerations
+## Use Cases
 
-- **Immutable**: No admin functions, no upgradability after deployment
-- **Reentrancy Protected**: All state-changing functions use ReentrancyGuard
-- **No Oracle Manipulation**: Prices snapshotted at harvest initiation
-- **Veto Mechanism**: 10% dollar-weighted threshold prevents malicious distributions
-- **Cooldown Period**: Prevents rapid succession attacks after veto
+1. **Stablecoin Depegs**: Coordinate recovery for depeg victims (UST, USDR, etc.)
+2. **Protocol Hacks**: Distribute recovered funds from white-hat negotiations
+3. **Failed Protocols**: Wind down failed DeFi protocols fairly
+4. **Insurance Payouts**: Structured distribution of insurance claims
+5. **Legal Settlements**: On-chain distribution of court-ordered recoveries
 
 ## License
 
